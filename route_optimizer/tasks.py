@@ -8,6 +8,7 @@ Called by:
 """
 
 import logging
+import threading
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
@@ -21,10 +22,15 @@ logger = logging.getLogger(__name__)
 
 ORS_GEOCODE_URL = f"{settings.ORS_BASE_URL}/geocode/search"
 
-DAILY_LIMIT = 900    # safely under ORS 1,000/day quota
-WORKERS = 10         # parallel threads per batch
-BATCH_SIZE = 10      # stations per parallel batch
-BATCH_SLEEP = 7.0    # seconds between batches → ~85 req/min (under 100/min limit)
+DAILY_LIMIT = 900        # safely under ORS 1,000/day quota
+WORKERS = 10             # parallel threads
+
+# Rate limiter: allow at most 80 API calls per 60-second sliding window.
+# Stays safely under ORS hard limit of 100 calls/minute.
+_RATE_LIMIT_CALLS = 80
+_RATE_WINDOW = 60.0
+_call_times: list[float] = []
+_rate_lock = threading.Lock()
 
 
 def geocode_stations(limit: int = DAILY_LIMIT, force: bool = False) -> dict:
@@ -53,41 +59,46 @@ def geocode_stations(limit: int = DAILY_LIMIT, force: bool = False) -> dict:
 
     logger.info(f"Geocoding {len(stations)} stations ({total_remaining} total remaining) …")
 
-    results: dict[int, tuple | None] = {}
-    total_batches = (len(stations) + BATCH_SIZE - 1) // BATCH_SIZE
-
-    for batch_idx in range(total_batches):
-        batch = stations[batch_idx * BATCH_SIZE: (batch_idx + 1) * BATCH_SIZE]
-
-        with ThreadPoolExecutor(max_workers=WORKERS) as pool:
-            future_to_pk = {
-                pool.submit(_geocode_station, s): s.pk for s in batch
-            }
-            for future in as_completed(future_to_pk):
-                pk = future_to_pk[future]
-                results[pk] = future.result()
-
-        done = min((batch_idx + 1) * BATCH_SIZE, len(stations))
-        logger.info(f"  … {done}/{len(stations)}")
-
-        if batch_idx < total_batches - 1:
-            time.sleep(BATCH_SLEEP)
-
-    # Bulk update coordinates
-    to_update = []
+    station_map = {s.pk: s for s in stations}
+    pending: list = []   # (station, coords) pairs waiting to be flushed
     success, failed = 0, 0
+    done = 0
 
-    for station in stations:
-        coords = results.get(station.pk)
-        if coords:
+    FLUSH_EVERY = 50  # write to DB every N completed geocodes
+
+    def _flush(batch):
+        to_update = []
+        for station, coords in batch:
             station.longitude, station.latitude = coords
             to_update.append(station)
-            success += 1
-        else:
-            failed += 1
+        with transaction.atomic():
+            FuelStation.objects.bulk_update(to_update, ["latitude", "longitude"], batch_size=500)
 
-    with transaction.atomic():
-        FuelStation.objects.bulk_update(to_update, ["latitude", "longitude"], batch_size=500)
+    with ThreadPoolExecutor(max_workers=WORKERS) as pool:
+        future_to_pk = {
+            pool.submit(_geocode_station, s): s.pk for s in stations
+        }
+        for future in as_completed(future_to_pk):
+            pk = future_to_pk[future]
+            coords = future.result()
+            done += 1
+            if coords:
+                pending.append((station_map[pk], coords))
+                success += 1
+            else:
+                failed += 1
+
+            if len(pending) >= FLUSH_EVERY:
+                _flush(pending)
+                pending.clear()
+
+            if done % 10 == 0:
+                logger.info(f"  … {done}/{len(stations)}")
+
+    # Flush any remaining results
+    if pending:
+        _flush(pending)
+
 
     geocoded_total = FuelStation.objects.filter(latitude__isnull=False).count()
     grand_total = FuelStation.objects.count()
@@ -109,7 +120,10 @@ def geocode_stations(limit: int = DAILY_LIMIT, force: bool = False) -> dict:
 # ── ORS helpers ───────────────────────────────────────────────────────────────
 
 def _geocode_station(station: FuelStation) -> tuple[float, float] | None:
-    """Try full address, fall back to city+state."""
+    """
+    Try full highway address first, fall back to city+state.
+    Exact per-station coordinates matter for truck routing.
+    """
     queries = [
         f"{station.address}, {station.city}, {station.state}, USA",
         f"{station.city}, {station.state}, USA",
@@ -122,6 +136,22 @@ def _geocode_station(station: FuelStation) -> tuple[float, float] | None:
 
 
 def _ors_call(query: str) -> tuple[float, float] | None:
+    """
+    Make one ORS geocoding call, gated by a sliding-window rate limiter.
+    Allows at most 80 API calls per 60-second window across all threads.
+    """
+    with _rate_lock:
+        now = time.monotonic()
+        while _call_times and _call_times[0] < now - _RATE_WINDOW:
+            _call_times.pop(0)
+        if len(_call_times) >= _RATE_LIMIT_CALLS:
+            sleep_for = _RATE_WINDOW - (now - _call_times[0]) + 0.05
+            time.sleep(max(sleep_for, 0))
+            now = time.monotonic()
+            while _call_times and _call_times[0] < now - _RATE_WINDOW:
+                _call_times.pop(0)
+        _call_times.append(time.monotonic())
+
     try:
         resp = requests.get(
             ORS_GEOCODE_URL,

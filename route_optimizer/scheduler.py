@@ -22,6 +22,7 @@ _SKIP_COMMANDS = {
     "migrate", "makemigrations", "collectstatic",
     "shell", "dbshell", "test", "check",
     "load_stations", "geocode_stations",
+    "createsuperuser", "changepassword",
 }
 
 
@@ -30,9 +31,16 @@ def start():
     Start the background scheduler.
     Skipped automatically during management commands that don't need it.
     """
-    # Don't start the scheduler when running management commands like
-    # migrate, makemigrations, shell, etc. — only for the web server.
     if any(cmd in sys.argv for cmd in _SKIP_COMMANDS):
+        return
+
+    # Defer DB access until after Django is fully initialised.
+    # This suppresses the "Accessing the database during app initialization"
+    # warning that APScheduler's DjangoJobStore triggers in ready().
+    from django.db import connection
+    try:
+        connection.ensure_connection()
+    except Exception:
         return
 
     scheduler = BackgroundScheduler()

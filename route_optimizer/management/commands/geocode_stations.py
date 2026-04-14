@@ -33,6 +33,14 @@ class Command(BaseCommand):
         )
 
     def handle(self, *args, **options):
+        from django.conf import settings
+        if not settings.ORS_API_KEY:
+            self.stdout.write(self.style.ERROR(
+                "ORS_API_KEY is not set in your .env file. Add it and try again."
+            ))
+            return
+
+        self.stdout.write("Starting geocoding — progress shown every 10 stations …")
         summary = geocode_stations(
             limit=options["limit"],
             force=options["force"],
