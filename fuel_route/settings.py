@@ -14,6 +14,7 @@ INSTALLED_APPS = [
     "django.contrib.contenttypes",
     "django.contrib.auth",
     "rest_framework",
+    "django_apscheduler",
     "route_optimizer",
 ]
 
@@ -41,6 +42,10 @@ REST_FRAMEWORK = {
 # OpenRouteService
 ORS_API_KEY = os.getenv("ORS_API_KEY", "")
 ORS_BASE_URL = "https://api.openrouteservice.org"
+
+# APScheduler
+APSCHEDULER_DATETIME_FORMAT = "N j, Y, f:s a"
+APSCHEDULER_RUN_NOW_TIMEOUT = 25  # seconds
 
 # Route optimizer constants
 TANK_RANGE_MILES = 500
