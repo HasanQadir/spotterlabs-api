@@ -1,20 +1,34 @@
 """
 Management command to load fuel stations from the CSV and geocode
-each unique (city, state) pair using the ORS Geocoding API.
+each unique station address using the ORS Geocoding API.
 
 Usage:
     uv run python manage.py load_stations --csv /path/to/fuel-prices-for-be-assessment.csv
 
-Speed optimisations vs a naive serial approach
------------------------------------------------
-1. Deduplicate first  — only geocode unique (city, state) pairs, not every row.
-2. Parallel geocoding — use a ThreadPoolExecutor (default 20 workers) to fire
-                        all ORS requests concurrently.  500 unique locations
-                        that would take ~3 min serially finish in ~8-12 s.
-3. Persistent cache   — results are saved to geocode_cache.json next to the DB.
-                        Re-running the command (e.g. after a data refresh) skips
-                        any location that was already geocoded → near-instant.
-4. Single bulk insert — all rows written in one DB transaction with bulk_create.
+Deduplication strategy
+-----------------------
+The CSV contains two kinds of repeated rows:
+
+  1. True duplicates — same station (same OPIS ID + address + city + state)
+     recorded multiple times with different prices. We keep only the row
+     with the LOWEST retail price, then store it once.
+
+  2. Different stations, same city — different OPIS IDs at different highway
+     exits in the same city. These are kept as separate rows and geocoded
+     individually by full address so each gets accurate coordinates.
+
+Speed optimisations
+--------------------
+1. Deduplicate true duplicates first  → fewer rows to geocode and store.
+2. Geocode by full address            → accurate per-station coordinates.
+3. Parallel geocoding (20 workers)    → concurrent ORS calls instead of serial.
+4. Address-level fallback             → if full address geocoding fails, fall
+                                        back to city + state so no station is
+                                        silently dropped.
+5. Persistent cache (geocode_cache.json) → re-runs skip already-geocoded
+                                        addresses, making subsequent loads
+                                        near-instant.
+6. Single bulk DB insert              → one transaction, no per-row commits.
 """
 
 import csv
@@ -32,11 +46,11 @@ from route_optimizer.models import FuelStation
 
 ORS_GEOCODE_URL = f"{settings.ORS_BASE_URL}/geocode/search"
 CACHE_FILE = settings.BASE_DIR / "geocode_cache.json"
-MAX_WORKERS = 20  # concurrent ORS requests
+MAX_WORKERS = 20
 
 
 class Command(BaseCommand):
-    help = "Load fuel stations from CSV and geocode them via ORS (parallelised)."
+    help = "Load fuel stations from CSV and geocode them by address via ORS."
 
     def add_arguments(self, parser):
         parser.add_argument(
@@ -69,56 +83,55 @@ class Command(BaseCommand):
         # ── 1. Parse CSV ──────────────────────────────────────────────────
         self.stdout.write(f"Reading {csv_path} …")
         rows = self._parse_csv(csv_path)
-        self.stdout.write(f"  {len(rows)} rows loaded.")
+        self.stdout.write(f"  {len(rows)} rows parsed.")
 
-        # ── 2. Deduplicate (city, state) pairs ────────────────────────────
-        unique_keys: set[tuple] = {
-            (r["city"].strip(), r["state"].strip()) for r in rows
-        }
-        self.stdout.write(f"  {len(unique_keys)} unique city/state locations.")
+        # ── 2. Deduplicate true duplicates ────────────────────────────────
+        # Group by (opis_id, address, city, state) — same physical station.
+        # Keep only the cheapest price among duplicates.
+        unique_stations = self._deduplicate(rows)
+        self.stdout.write(
+            f"  {len(unique_stations)} unique stations after deduplication "
+            f"({len(rows) - len(unique_stations)} true duplicates removed)."
+        )
 
-        # ── 3. Load persistent geocode cache ──────────────────────────────
+        # ── 3. Load geocode cache ─────────────────────────────────────────
         cache: dict[str, tuple | None] = self._load_cache()
-        cache_key = lambda city, state: f"{city.strip()}|{state.strip()}"
 
         to_geocode = [
-            (city, state)
-            for city, state in unique_keys
-            if cache_key(city, state) not in cache
+            row for row in unique_stations
+            if self._cache_key(row) not in cache
         ]
 
         if to_geocode:
             self.stdout.write(
-                f"Geocoding {len(to_geocode)} new locations "
-                f"({len(unique_keys) - len(to_geocode)} already cached) "
+                f"Geocoding {len(to_geocode)} stations by address "
+                f"({len(unique_stations) - len(to_geocode)} already cached) "
                 f"with {options['workers']} parallel workers …"
             )
             t0 = time.perf_counter()
             newly_geocoded = self._geocode_parallel(to_geocode, options["workers"])
             elapsed = time.perf_counter() - t0
 
-            # Merge into cache
-            for (city, state), coords in newly_geocoded.items():
-                cache[cache_key(city, state)] = coords
+            for key, coords in newly_geocoded.items():
+                cache[key] = coords
             self._save_cache(cache)
 
             hits = sum(1 for v in newly_geocoded.values() if v is not None)
             self.stdout.write(
                 self.style.SUCCESS(
-                    f"  Geocoded {hits}/{len(to_geocode)} locations in {elapsed:.1f}s."
+                    f"  Geocoded {hits}/{len(to_geocode)} stations in {elapsed:.1f}s."
                 )
             )
         else:
             self.stdout.write(
-                self.style.SUCCESS("  All locations already in cache — skipping geocoding.")
+                self.style.SUCCESS("  All stations already in cache — skipping geocoding.")
             )
 
         # ── 4. Build FuelStation objects ──────────────────────────────────
         stations = []
         skipped = 0
-        for row in rows:
-            key = cache_key(row["city"], row["state"])
-            coords = cache.get(key)
+        for row in unique_stations:
+            coords = cache.get(self._cache_key(row))
             if coords is None:
                 skipped += 1
                 continue
@@ -142,7 +155,7 @@ class Command(BaseCommand):
             f"({skipped} skipped — geocoding failed) …"
         )
 
-        # ── 5. Bulk insert in a single transaction ────────────────────────
+        # ── 5. Bulk insert ────────────────────────────────────────────────
         with transaction.atomic():
             if options["clear"]:
                 FuelStation.objects.all().delete()
@@ -156,52 +169,88 @@ class Command(BaseCommand):
 
     # ── helpers ──────────────────────────────────────────────────────────────
 
+    @staticmethod
+    def _deduplicate(rows: list[dict]) -> list[dict]:
+        """
+        Group rows by (opis_id, address, city, state).
+        Keep only the row with the lowest retail_price per group.
+        """
+        groups: dict[tuple, dict] = {}
+        for row in rows:
+            key = (
+                row["opis_id"].strip(),
+                row["address"].strip().lower(),
+                row["city"].strip().lower(),
+                row["state"].strip().upper(),
+            )
+            if key not in groups or float(row["retail_price"]) < float(groups[key]["retail_price"]):
+                groups[key] = row
+        return list(groups.values())
+
+    @staticmethod
+    def _cache_key(row: dict) -> str:
+        """Stable string key for the geocode cache."""
+        return f"{row['address'].strip()}|{row['city'].strip()}|{row['state'].strip()}"
+
     def _geocode_parallel(
         self,
-        locations: list[tuple[str, str]],
+        rows: list[dict],
         workers: int,
-    ) -> dict[tuple, tuple | None]:
-        """
-        Geocode all (city, state) pairs concurrently.
-        Returns a dict mapping (city, state) → (lon, lat) | None.
-        """
-        results: dict[tuple, tuple | None] = {}
+    ) -> dict[str, tuple | None]:
+        results: dict[str, tuple | None] = {}
         with ThreadPoolExecutor(max_workers=workers) as pool:
             future_to_key = {
-                pool.submit(self._geocode, city, state): (city, state)
-                for city, state in locations
+                pool.submit(
+                    self._geocode,
+                    row["address"],
+                    row["city"],
+                    row["state"],
+                ): self._cache_key(row)
+                for row in rows
             }
             done = 0
             for future in as_completed(future_to_key):
                 key = future_to_key[future]
                 results[key] = future.result()
                 done += 1
-                if done % 50 == 0:
-                    self.stdout.write(f"  … {done}/{len(locations)}")
+                if done % 100 == 0:
+                    self.stdout.write(f"  … {done}/{len(rows)}")
         return results
 
     @staticmethod
-    def _geocode(city: str, state: str) -> tuple[float, float] | None:
-        query = f"{city.strip()}, {state.strip()}, USA"
-        try:
-            resp = requests.get(
-                ORS_GEOCODE_URL,
-                params={
-                    "api_key": settings.ORS_API_KEY,
-                    "text": query,
-                    "boundary.country": "US",
-                    "size": 1,
-                },
-                timeout=10,
-            )
-            resp.raise_for_status()
-            features = resp.json().get("features", [])
-            if not features:
+    def _geocode(address: str, city: str, state: str) -> tuple[float, float] | None:
+        """
+        Geocode a station by full address, falling back to city+state if needed.
+        Full address gives accurate per-station coordinates (different highway
+        exits in the same city resolve to different points).
+        """
+        def _call(query: str) -> tuple[float, float] | None:
+            try:
+                resp = requests.get(
+                    ORS_GEOCODE_URL,
+                    params={
+                        "api_key": settings.ORS_API_KEY,
+                        "text": query,
+                        "boundary.country": "US",
+                        "size": 1,
+                    },
+                    timeout=10,
+                )
+                resp.raise_for_status()
+                features = resp.json().get("features", [])
+                if not features:
+                    return None
+                lon, lat = features[0]["geometry"]["coordinates"]
+                return float(lon), float(lat)
+            except Exception:
                 return None
-            lon, lat = features[0]["geometry"]["coordinates"]
-            return float(lon), float(lat)
-        except Exception:
-            return None
+
+        # Try full address first, fall back to city+state
+        full_query = f"{address.strip()}, {city.strip()}, {state.strip()}, USA"
+        result = _call(full_query)
+        if result is None:
+            result = _call(f"{city.strip()}, {state.strip()}, USA")
+        return result
 
     @staticmethod
     def _parse_csv(path: Path) -> list[dict]:
@@ -228,7 +277,6 @@ class Command(BaseCommand):
         if CACHE_FILE.exists():
             try:
                 data = json.loads(CACHE_FILE.read_text())
-                # JSON keys are strings; values are [lon, lat] lists or null
                 return {k: tuple(v) if v else None for k, v in data.items()}
             except Exception:
                 pass
