@@ -168,7 +168,9 @@ class RouteViewerView(APIView):
         stops_rows = "".join(
             f"<tr><td>{i+1}</td><td>{s.station.name}</td><td>{s.station.city}, {s.station.state}</td>"
             f"<td>${s.station.retail_price:.3f}</td><td>{s.gallons_purchased:.1f}</td>"
-            f"<td>${s.stop_cost:.2f}</td><td>{s.mile_marker:.0f}</td></tr>"
+            f"<td>${s.stop_cost:.2f}</td><td>{s.mile_marker:.0f}</td>"
+            f"<td><a href=\"https://www.google.com/maps?q={s.station.latitude},{s.station.longitude}\" "
+            f"target=\"_blank\">{s.station.latitude:.5f}, {s.station.longitude:.5f}</a></td></tr>"
             for i, s in enumerate(result.stops)
         )
 
@@ -199,7 +201,7 @@ class RouteViewerView(APIView):
   <img src="data:image/png;base64,{result.map_b64}" alt="Route map">
   <table>
     <thead>
-      <tr><th>#</th><th>Station</th><th>Location</th><th>Price/gal</th><th>Gallons</th><th>Cost</th><th>Mile</th></tr>
+      <tr><th>#</th><th>Station</th><th>Location</th><th>Price/gal</th><th>Gallons</th><th>Cost</th><th>Mile</th><th>Coordinates</th></tr>
     </thead>
     <tbody>{stops_rows}</tbody>
   </table>
