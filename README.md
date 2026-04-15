@@ -8,7 +8,7 @@ A Django REST API that takes a start and finish location within the USA and retu
 2. **Fetches the driving route** from ORS - 1 API call
 3. **Finds fuel stations near the route** using a spatial buffer - pure local DB query, zero extra API calls
 4. **Runs a greedy cost-optimisation algorithm** to select the cheapest sequence of stops given a 500-mile tank and 10 MPG efficiency
-5. **Returns** JSON with the optimised stop list, total cost, GeoJSON route, and a base64 map image
+5. **Returns** an interactive HTML map with the optimised stop list, clickable fuel stop markers, and total fuel cost
 
 **Total ORS API calls per request: 3 (geocode × 2 + routing × 1)**
 **Repeat requests for the same route: 0 API calls (served from cache)**
@@ -60,63 +60,21 @@ uv run python manage.py runserver
 
 ## API Endpoints
 
-### `GET /api/route/` - JSON response
+### `GET /api/route/view/`
 
 | Parameter | Required | Description |
 |-----------|----------|-------------|
 | `start`   | Yes | Starting location (e.g. `Dallas, TX`) |
 | `finish`  | Yes | Destination (e.g. `Indianapolis, IN`) |
 
+Returns a browser-friendly HTML page with:
+- Route summary (distance, total cost, number of stops)
+- Interactive Leaflet.js map (CartoDB/OSM tiles) with the route line and clickable fuel stop markers
+- Table of fuel stops with station name, location, price, gallons, cost, mile marker, and coordinates
+
 #### Example
 ```
-GET http://localhost:8000/api/route/?start=Dallas, TX&finish=Indianapolis, IN
-```
-
-#### Response
-```json
-{
-  "start": "Dallas, TX",
-  "finish": "Indianapolis, IN",
-  "total_distance_miles": 902.5,
-  "total_fuel_cost_usd": 122.14,
-  "fuel_stops": [
-    {
-      "name": "EXXON - Pilot #1293",
-      "address": "I-30, EXIT 61",
-      "city": "Garland",
-      "state": "TX",
-      "price_per_gallon": 2.842,
-      "gallons_purchased": 1.44,
-      "stop_cost_usd": 4.10,
-      "mile_marker": 14.4,
-      "coordinates": { "latitude": 32.907, "longitude": -96.640 }
-    }
-  ],
-  "route": {
-    "geojson": { "type": "FeatureCollection", "features": [...] },
-    "map_image_base64": "iVBORw0KGgo..."
-  }
-}
-```
-
----
-
-### `GET /api/route/view/` - Browser-friendly HTML page
-
-Opens a visual page with the route map and a fuel stop table. Each stop has a clickable Google Maps link for its coordinates.
-
-```
 GET http://localhost:8000/api/route/view/?start=Dallas, TX&finish=Indianapolis, IN
-```
-
----
-
-### `GET /api/route/map/` - Raw PNG map image
-
-Returns the route map as a PNG image directly viewable in a browser.
-
-```
-GET http://localhost:8000/api/route/map/?start=Dallas, TX&finish=Indianapolis, IN
 ```
 
 ---
