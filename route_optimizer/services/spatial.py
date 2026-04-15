@@ -1,5 +1,5 @@
 """
-Spatial utilities — all pure Python / Shapely, zero external calls.
+Spatial utilities - all pure Python / Shapely, zero external calls.
 
 Key operations:
   - Build a Shapely LineString from the ORS route geometry
@@ -51,7 +51,7 @@ def build_linestring(coords: list[list[float]]) -> LineString:
 # ── Station proximity ────────────────────────────────────────────────────────
 
 # 1 degree of latitude ≈ 69 miles everywhere.
-# 1 degree of longitude ≈ 69 * cos(lat) miles — we use the lat midpoint of
+# 1 degree of longitude ≈ 69 * cos(lat) miles - we use the lat midpoint of
 # the continental US (~39°) as a conservative approximation.
 _DEG_PER_MILE_LAT = 1.0 / 69.0
 _DEG_PER_MILE_LON = 1.0 / (69.0 * math.cos(math.radians(39.0)))

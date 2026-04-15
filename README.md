@@ -4,9 +4,9 @@ A Django REST API that takes a start and finish location within the USA and retu
 
 ## How it works
 
-1. **Geocodes** start + finish via OpenRouteService (ORS) — 2 API calls
-2. **Fetches the driving route** from ORS — 1 API call
-3. **Finds fuel stations near the route** using a spatial buffer — pure local DB query, zero extra API calls
+1. **Geocodes** start + finish via OpenRouteService (ORS) - 2 API calls
+2. **Fetches the driving route** from ORS - 1 API call
+3. **Finds fuel stations near the route** using a spatial buffer - pure local DB query, zero extra API calls
 4. **Runs a greedy cost-optimisation algorithm** to select the cheapest sequence of stops given a 500-mile tank and 10 MPG efficiency
 5. **Returns** JSON with the optimised stop list, total cost, GeoJSON route, and a base64 map image
 
@@ -43,7 +43,7 @@ uv run python manage.py migrate
 ```bash
 uv run python manage.py load_stations --csv /path/to/fuel-prices-for-be-assessment.csv
 ```
-Parses the CSV and inserts all stations into the local SQLite database. No API calls — completes in seconds.
+Parses the CSV and inserts all stations into the local SQLite database. No API calls - completes in seconds.
 
 ### 6. Geocode stations (fills in lat/lon coordinates)
 ```bash
@@ -60,7 +60,7 @@ uv run python manage.py runserver
 
 ## API Endpoints
 
-### `GET /api/route/` — JSON response
+### `GET /api/route/` - JSON response
 
 | Parameter | Required | Description |
 |-----------|----------|-------------|
@@ -101,7 +101,7 @@ GET http://localhost:8000/api/route/?start=Dallas, TX&finish=Indianapolis, IN
 
 ---
 
-### `GET /api/route/view/` — Browser-friendly HTML page
+### `GET /api/route/view/` - Browser-friendly HTML page
 
 Opens a visual page with the route map and a fuel stop table. Each stop has a clickable Google Maps link for its coordinates.
 
@@ -111,7 +111,7 @@ GET http://localhost:8000/api/route/view/?start=Dallas, TX&finish=Indianapolis, 
 
 ---
 
-### `GET /api/route/map/` — Raw PNG map image
+### `GET /api/route/map/` - Raw PNG map image
 
 Returns the route map as a PNG image directly viewable in a browser.
 

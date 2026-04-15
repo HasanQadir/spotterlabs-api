@@ -41,7 +41,7 @@ class Command(BaseCommand):
             ))
             return
 
-        self.stdout.write("Starting geocoding — progress shown every 10 stations …")
+        self.stdout.write("Starting geocoding - progress shown every 10 stations …")
         summary = geocode_stations(
             limit=options["limit"],
             force=options["force"],

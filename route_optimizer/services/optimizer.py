@@ -114,7 +114,7 @@ def optimise(
         remaining_after_stop = total_distance_miles - best_marker
 
         if remaining_after_stop <= tank_range:
-            # We can reach the destination from here — buy just enough.
+            # We can reach the destination from here - buy just enough.
             gallons_needed = max(0.0, (remaining_after_stop - fuel_on_arrival) / mpg * mpg)
             # Simpler: miles_needed = remaining_after_stop - fuel_on_arrival
             miles_to_buy = max(0.0, remaining_after_stop - fuel_on_arrival)
@@ -139,7 +139,7 @@ def optimise(
                 # Simpler expression:
                 miles_to_buy = max(0.0, (next_cheap_marker - best_marker) - fuel_on_arrival)
             else:
-                # This is the cheapest for a full tank — fill up.
+                # This is the cheapest for a full tank - fill up.
                 miles_to_buy = tank_range - fuel_on_arrival
 
         # Cap at tank capacity

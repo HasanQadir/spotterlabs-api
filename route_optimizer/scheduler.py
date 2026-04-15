@@ -55,7 +55,7 @@ def start():
     )
 
     scheduler.start()
-    logger.info("Scheduler started — geocode_stations_daily will run at 2:00 AM every day.")
+    logger.info("Scheduler started - geocode_stations_daily will run at 2:00 AM every day.")
 
 
 def _geocode_job():

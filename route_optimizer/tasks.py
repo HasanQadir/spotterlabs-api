@@ -1,5 +1,5 @@
 """
-Geocoding task — shared between the APScheduler job and the
+Geocoding task - shared between the APScheduler job and the
 `geocode_stations` management command.
 
 Called by:
@@ -40,7 +40,7 @@ def geocode_stations(limit: int = DAILY_LIMIT, force: bool = False) -> dict:
     Returns a summary dict with counts for logging/display.
     """
     if not settings.ORS_API_KEY:
-        logger.error("ORS_API_KEY is not set — geocoding skipped.")
+        logger.error("ORS_API_KEY is not set - geocoding skipped.")
         return {"error": "ORS_API_KEY not set"}
 
     qs = FuelStation.objects.all() if force else \

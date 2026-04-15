@@ -7,7 +7,7 @@ We make at most 3 external calls per request:
   3. Fetch driving directions (GeoJSON)
 
 The directions response contains the full route geometry and
-the total distance — everything we need for the optimizer.
+the total distance - everything we need for the optimizer.
 """
 
 import requests

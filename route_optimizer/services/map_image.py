@@ -1,6 +1,6 @@
 """
 Render a static PNG map of the route + fuel stops using OpenStreetMap tiles.
-No external API key needed — uses the public OSM tile CDN.
+No external API key needed - uses the public OSM tile CDN.
 
 Returns a base64-encoded PNG string suitable for embedding in JSON responses
 or displaying as <img src="data:image/png;base64,...">.

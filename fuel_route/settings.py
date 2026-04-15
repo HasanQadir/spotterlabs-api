@@ -88,8 +88,8 @@ LOGGING = {
 APSCHEDULER_DATETIME_FORMAT = "N j, Y, f:s a"
 APSCHEDULER_RUN_NOW_TIMEOUT = 25  # seconds
 
-# Cache — file-based so it survives server restarts.
-# TIMEOUT=None means entries never expire — invalidation is handled explicitly
+# Cache - file-based so it survives server restarts.
+# TIMEOUT=None means entries never expire - invalidation is handled explicitly
 # via signals (admin changes) and after geocoding runs complete.
 CACHES = {
     "default": {

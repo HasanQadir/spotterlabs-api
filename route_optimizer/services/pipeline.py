@@ -1,5 +1,5 @@
 """
-Route pipeline — orchestrates all services for a single route request.
+Route pipeline - orchestrates all services for a single route request.
 
 Ties together: geocoding → routing → spatial filtering → optimisation → map rendering.
 Views call compute_route() and get back a RouteResult; they never touch the

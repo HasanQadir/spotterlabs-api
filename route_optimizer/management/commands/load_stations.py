@@ -4,7 +4,7 @@ Management command to load fuel stations from the CSV into the database.
 Usage:
     uv run python manage.py load_stations --csv /path/to/fuel-prices-for-be-assessment.csv
 
-This command ONLY handles data loading — no geocoding.
+This command ONLY handles data loading - no geocoding.
 Geocoding (lat/lon) is handled separately by the `geocode_stations` command
 which runs as a daily cron job, processing 900 stations per day to stay
 within the ORS free-tier quota of 1,000 requests/day.
@@ -14,7 +14,7 @@ Deduplication
   1. True duplicates (same OPIS ID + address + city + state, different prices)
      → keep only the cheapest price row.
   2. Different stations in the same city (different addresses) are kept as
-     separate rows — each will get its own geocoded coordinates later.
+     separate rows - each will get its own geocoded coordinates later.
 """
 
 import csv
@@ -85,7 +85,7 @@ class Command(BaseCommand):
 
         total = FuelStation.objects.count()
         self.stdout.write(self.style.SUCCESS(
-            f"Done. {total} stations in database (coordinates pending — "
+            f"Done. {total} stations in database (coordinates pending - "
             f"run 'geocode_stations' or wait for the daily cron job)."
         ))
 
