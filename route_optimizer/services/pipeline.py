@@ -9,6 +9,7 @@ individual services directly.
 from dataclasses import dataclass
 
 from django.conf import settings
+from django.core.cache import cache
 
 from ..models import FuelStation
 from . import routing as routing_svc
@@ -29,8 +30,15 @@ class RouteResult:
 def compute_route(start: str, finish: str) -> RouteResult:
     """
     Full pipeline: geocode → driving route → nearby stations → optimise → map.
+    Results are cached indefinitely. Cache is cleared automatically when
+    FuelStation data changes (signals) or after a geocoding run completes.
     Raises ValueError / Exception on failure (callers convert to HTTP errors).
     """
+    cache_key = f"route:{start.lower().strip()}:{finish.lower().strip()}"
+    cached = cache.get(cache_key)
+    if cached is not None:
+        return cached
+
     start_coords = routing_svc.geocode(start)
     finish_coords = routing_svc.geocode(finish)
 
@@ -53,10 +61,12 @@ def compute_route(start: str, finish: str) -> RouteResult:
 
     map_b64 = render_map(coords, stops)
 
-    return RouteResult(
+    result = RouteResult(
         coords=coords,
         total_distance_miles=total_distance_miles,
         stops=stops,
         total_fuel_cost=total_fuel_cost,
         map_b64=map_b64,
     )
+    cache.set(cache_key, result)
+    return result

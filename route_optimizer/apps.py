@@ -6,5 +6,5 @@ class RouteOptimizerConfig(AppConfig):
     name = "route_optimizer"
 
     def ready(self):
-        from . import scheduler
+        from . import scheduler, signals  # noqa: F401
         scheduler.start()

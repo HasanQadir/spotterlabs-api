@@ -16,6 +16,8 @@ import requests
 from django.conf import settings
 from django.db import transaction
 
+from django.core.cache import cache
+
 from .constants import DAILY_LIMIT, WORKERS, RATE_LIMIT_CALLS, RATE_WINDOW
 from .models import FuelStation
 
@@ -104,6 +106,7 @@ def geocode_stations(limit: int = DAILY_LIMIT, force: bool = False) -> dict:
         "grand_total": grand_total,
         "remaining": grand_total - geocoded_total,
     }
+    cache.clear()
     logger.info(
         f"Done. {success} geocoded, {failed} failed. "
         f"Progress: {geocoded_total}/{grand_total} stations have coordinates."

@@ -18,6 +18,7 @@ env/
 
 # Django
 db.sqlite3
+.cache/
 *.log
 media/
 
