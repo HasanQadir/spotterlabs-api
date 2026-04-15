@@ -1,43 +1,52 @@
-"""
-Single API endpoint:
-
-    GET /api/route/?start=<location>&finish=<location>
-
-Example:
-    GET /api/route/?start=Chicago, IL&finish=Dallas, TX
-
-Response (JSON):
-    {
-        "total_distance_miles": 920.5,
-        "total_fuel_cost": 287.45,
-        "fuel_stops": [ ... ],
-        "route": {
-            "geojson": { ... },   // GeoJSON FeatureCollection — paste into geojson.io
-            "map_image_base64": "..." // PNG rendered with OSM tiles
-        }
-    }
-"""
-
 import base64
-import io
-import json
 
-from django.conf import settings
 from django.http import HttpResponse
 from rest_framework.request import Request
 from rest_framework.response import Response
 from rest_framework.views import APIView
 
-from .models import FuelStation
-from .services import routing as routing_svc
-from .services import spatial as spatial_svc
-from .services.optimizer import optimise
-from .services.map_image import render_map
+from .services.optimizer import StopResult
+from .services.pipeline import compute_route
 
+
+# ── Views ────────────────────────────────────────────────────────────────────
 
 class RouteView(APIView):
     """
-    GET  /api/route/?start=...&finish=...
+    GET /api/route/?start=<location>&finish=<location>
+
+    Geocodes start and finish, fetches the driving route from ORS, finds the
+    cheapest fuel stops along the way, and returns a JSON response with the
+    optimised stop list, total cost, GeoJSON route, and a base64 map image.
+
+    Example:
+        GET /api/route/?start=Dallas, TX&finish=Indianapolis, IN
+
+    Response (JSON):
+        {
+            "start": "Dallas, TX",
+            "finish": "Indianapolis, IN",
+            "total_distance_miles": 902.5,
+            "total_fuel_cost_usd": 122.14,
+            "fuel_stops": [
+                {
+                    "name": "EXXON - Pilot #1293",
+                    "address": "I-30, EXIT 61",
+                    "city": "Garland",
+                    "state": "TX",
+                    "price_per_gallon": 2.842,
+                    "gallons_purchased": 1.44,
+                    "stop_cost_usd": 4.10,
+                    "mile_marker": 14.4,
+                    "coordinates": {"latitude": 32.907, "longitude": -96.640}
+                },
+                ...
+            ],
+            "route": {
+                "geojson": { ... },           // GeoJSON FeatureCollection
+                "map_image_base64": "iVBOR..." // PNG rendered with OSM tiles
+            }
+        }
     """
 
     def get(self, request: Request) -> Response:
@@ -50,47 +59,13 @@ class RouteView(APIView):
                 status=400,
             )
 
-        # ── 1. Geocode start & finish (2 ORS calls) ──────────────────────
         try:
-            start_coords = routing_svc.geocode(start)
-            finish_coords = routing_svc.geocode(finish)
-        except Exception as exc:
-            return Response({"error": f"Geocoding failed: {exc}"}, status=400)
-
-        # ── 2. Fetch driving route (1 ORS call) ──────────────────────────
-        try:
-            route_data = routing_svc.get_route(start_coords, finish_coords)
-        except Exception as exc:
-            return Response({"error": f"Routing failed: {exc}"}, status=502)
-
-        feature = route_data["features"][0]
-        coords = feature["geometry"]["coordinates"]  # [[lon, lat], ...]
-        total_distance_miles = spatial_svc.route_length_miles(coords)
-
-        # ── 3. Find stations near the route (local, no API call) ─────────
-        route_line = spatial_svc.build_linestring(coords)
-        all_stations = FuelStation.objects.all()
-        stations_with_markers = spatial_svc.find_stations_near_route(
-            route_line,
-            all_stations,
-            buffer_miles=settings.ROUTE_BUFFER_MILES,
-        )
-
-        # ── 4. Optimise fuel stops (local, no API call) ───────────────────
-        try:
-            stops, total_fuel_cost = optimise(
-                stations_with_markers,
-                total_distance_miles,
-                tank_range=settings.TANK_RANGE_MILES,
-                mpg=settings.MPG,
-            )
+            result = compute_route(start, finish)
         except ValueError as exc:
             return Response({"error": str(exc)}, status=422)
+        except Exception as exc:
+            return Response({"error": str(exc)}, status=502)
 
-        # ── 5. Build map image (local, OSM tiles) ────────────────────────
-        map_b64 = render_map(coords, stops)
-
-        # ── 6. Serialise response ─────────────────────────────────────────
         stops_payload = [
             {
                 "name": s.station.name,
@@ -106,19 +81,19 @@ class RouteView(APIView):
                     "longitude": s.station.longitude,
                 },
             }
-            for s in stops
+            for s in result.stops
         ]
 
         return Response(
             {
                 "start": start,
                 "finish": finish,
-                "total_distance_miles": round(total_distance_miles, 1),
-                "total_fuel_cost_usd": total_fuel_cost,
+                "total_distance_miles": round(result.total_distance_miles, 1),
+                "total_fuel_cost_usd": result.total_fuel_cost,
                 "fuel_stops": stops_payload,
                 "route": {
-                    "geojson": _build_geojson(coords, stops),
-                    "map_image_base64": map_b64,
+                    "geojson": _build_geojson(result.coords, result.stops),
+                    "map_image_base64": result.map_b64,
                 },
             }
         )
@@ -126,8 +101,15 @@ class RouteView(APIView):
 
 class RouteMapView(APIView):
     """
-    GET /api/route/map/?start=...&finish=...
-    Returns the route map as a PNG image directly (viewable in a browser).
+    GET /api/route/map/?start=<location>&finish=<location>
+
+    Returns the route map as a raw PNG image, viewable directly in a browser
+    or embeddable in an <img> tag without base64 decoding.
+
+    Example:
+        GET /api/route/map/?start=Dallas, TX&finish=Indianapolis, IN
+
+    Response: PNG image (Content-Type: image/png)
     """
 
     def get(self, request: Request) -> HttpResponse:
@@ -135,46 +117,36 @@ class RouteMapView(APIView):
         finish = request.query_params.get("finish", "").strip()
 
         if not start or not finish:
-            return HttpResponse("Both 'start' and 'finish' query parameters are required.", status=400)
-
-        try:
-            start_coords = routing_svc.geocode(start)
-            finish_coords = routing_svc.geocode(finish)
-        except Exception as exc:
-            return HttpResponse(f"Geocoding failed: {exc}", status=400)
-
-        try:
-            route_data = routing_svc.get_route(start_coords, finish_coords)
-        except Exception as exc:
-            return HttpResponse(f"Routing failed: {exc}", status=502)
-
-        feature = route_data["features"][0]
-        coords = feature["geometry"]["coordinates"]
-        total_distance_miles = spatial_svc.route_length_miles(coords)
-
-        route_line = spatial_svc.build_linestring(coords)
-        all_stations = FuelStation.objects.all()
-        stations_with_markers = spatial_svc.find_stations_near_route(
-            route_line, all_stations, buffer_miles=settings.ROUTE_BUFFER_MILES
-        )
-
-        try:
-            stops, total_fuel_cost = optimise(
-                stations_with_markers, total_distance_miles,
-                tank_range=settings.TANK_RANGE_MILES, mpg=settings.MPG,
+            return HttpResponse(
+                "Both 'start' and 'finish' query parameters are required.", status=400
             )
+
+        try:
+            result = compute_route(start, finish)
         except ValueError as exc:
             return HttpResponse(str(exc), status=422)
+        except Exception as exc:
+            return HttpResponse(str(exc), status=502)
 
-        map_b64 = render_map(coords, stops)
-        img_bytes = base64.b64decode(map_b64)
+        img_bytes = base64.b64decode(result.map_b64)
         return HttpResponse(img_bytes, content_type="image/png")
 
 
 class RouteViewerView(APIView):
     """
-    GET /api/route/view/?start=...&finish=...
-    Returns a simple HTML page showing the map image and fuel stop summary.
+    GET /api/route/view/?start=<location>&finish=<location>
+
+    Returns a browser-friendly HTML page showing the route map image and a
+    table of fuel stops with prices, gallons purchased, and mile markers.
+    Useful for quick visual demos without a separate frontend.
+
+    Example:
+        GET /api/route/view/?start=Dallas, TX&finish=Indianapolis, IN
+
+    Response: HTML page with:
+        - Route summary (distance, total cost, number of stops)
+        - Full-width map image rendered with OSM tiles
+        - Table of fuel stops with station name, location, price, gallons, cost, mile marker
     """
 
     def get(self, request: Request) -> HttpResponse:
@@ -182,44 +154,22 @@ class RouteViewerView(APIView):
         finish = request.query_params.get("finish", "").strip()
 
         if not start or not finish:
-            return HttpResponse("Both 'start' and 'finish' parameters are required.", status=400)
-
-        try:
-            start_coords = routing_svc.geocode(start)
-            finish_coords = routing_svc.geocode(finish)
-        except Exception as exc:
-            return HttpResponse(f"Geocoding failed: {exc}", status=400)
-
-        try:
-            route_data = routing_svc.get_route(start_coords, finish_coords)
-        except Exception as exc:
-            return HttpResponse(f"Routing failed: {exc}", status=502)
-
-        feature = route_data["features"][0]
-        coords = feature["geometry"]["coordinates"]
-        total_distance_miles = spatial_svc.route_length_miles(coords)
-
-        route_line = spatial_svc.build_linestring(coords)
-        all_stations = FuelStation.objects.all()
-        stations_with_markers = spatial_svc.find_stations_near_route(
-            route_line, all_stations, buffer_miles=settings.ROUTE_BUFFER_MILES
-        )
-
-        try:
-            stops, total_fuel_cost = optimise(
-                stations_with_markers, total_distance_miles,
-                tank_range=settings.TANK_RANGE_MILES, mpg=settings.MPG,
+            return HttpResponse(
+                "Both 'start' and 'finish' query parameters are required.", status=400
             )
+
+        try:
+            result = compute_route(start, finish)
         except ValueError as exc:
             return HttpResponse(str(exc), status=422)
-
-        map_b64 = render_map(coords, stops)
+        except Exception as exc:
+            return HttpResponse(str(exc), status=502)
 
         stops_rows = "".join(
             f"<tr><td>{i+1}</td><td>{s.station.name}</td><td>{s.station.city}, {s.station.state}</td>"
             f"<td>${s.station.retail_price:.3f}</td><td>{s.gallons_purchased:.1f}</td>"
             f"<td>${s.stop_cost:.2f}</td><td>{s.mile_marker:.0f}</td></tr>"
-            for i, s in enumerate(stops)
+            for i, s in enumerate(result.stops)
         )
 
         html = f"""<!DOCTYPE html>
@@ -242,11 +192,11 @@ class RouteViewerView(APIView):
 <body>
   <h1>Fuel Route: {start} → {finish}</h1>
   <div class="summary">
-    <p>Total distance: <strong>{total_distance_miles:.1f} miles</strong> &nbsp;|&nbsp;
-       Total fuel cost: <span>${total_fuel_cost:.2f}</span> &nbsp;|&nbsp;
-       Fuel stops: <strong>{len(stops)}</strong></p>
+    <p>Total distance: <strong>{result.total_distance_miles:.1f} miles</strong> &nbsp;|&nbsp;
+       Total fuel cost: <span>${result.total_fuel_cost:.2f}</span> &nbsp;|&nbsp;
+       Fuel stops: <strong>{len(result.stops)}</strong></p>
   </div>
-  <img src="data:image/png;base64,{map_b64}" alt="Route map">
+  <img src="data:image/png;base64,{result.map_b64}" alt="Route map">
   <table>
     <thead>
       <tr><th>#</th><th>Station</th><th>Location</th><th>Price/gal</th><th>Gallons</th><th>Cost</th><th>Mile</th></tr>
@@ -260,7 +210,7 @@ class RouteViewerView(APIView):
 
 # ── GeoJSON builder ──────────────────────────────────────────────────────────
 
-def _build_geojson(coords: list, stops) -> dict:
+def _build_geojson(coords: list, stops: list[StopResult]) -> dict:
     """
     Return a GeoJSON FeatureCollection with:
       - one LineString for the route

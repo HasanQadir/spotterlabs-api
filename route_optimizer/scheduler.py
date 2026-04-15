@@ -14,7 +14,10 @@ import sys
 
 from apscheduler.schedulers.background import BackgroundScheduler
 from apscheduler.triggers.cron import CronTrigger
+from django.db import connection
 from django_apscheduler.jobstores import DjangoJobStore
+
+from .tasks import geocode_stations
 
 logger = logging.getLogger(__name__)
 
@@ -34,10 +37,6 @@ def start():
     if any(cmd in sys.argv for cmd in _SKIP_COMMANDS):
         return
 
-    # Defer DB access until after Django is fully initialised.
-    # This suppresses the "Accessing the database during app initialization"
-    # warning that APScheduler's DjangoJobStore triggers in ready().
-    from django.db import connection
     try:
         connection.ensure_connection()
     except Exception:
@@ -60,6 +59,5 @@ def start():
 
 
 def _geocode_job():
-    """Entry point called by APScheduler — imports task at call time to avoid circular imports."""
-    from .tasks import geocode_stations
+    """Entry point called by APScheduler."""
     geocode_stations()

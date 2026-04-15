@@ -10,9 +10,11 @@ The same logic runs automatically every day at 2:00 AM via APScheduler.
 Use this command to seed data manually (e.g. before a demo).
 """
 
+from django.conf import settings
 from django.core.management.base import BaseCommand
 
-from route_optimizer.tasks import geocode_stations, DAILY_LIMIT
+from route_optimizer.constants import DAILY_LIMIT
+from route_optimizer.tasks import geocode_stations
 
 
 class Command(BaseCommand):
@@ -33,7 +35,6 @@ class Command(BaseCommand):
         )
 
     def handle(self, *args, **options):
-        from django.conf import settings
         if not settings.ORS_API_KEY:
             self.stdout.write(self.style.ERROR(
                 "ORS_API_KEY is not set in your .env file. Add it and try again."

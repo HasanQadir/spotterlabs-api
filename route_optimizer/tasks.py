@@ -16,19 +16,13 @@ import requests
 from django.conf import settings
 from django.db import transaction
 
+from .constants import DAILY_LIMIT, WORKERS, RATE_LIMIT_CALLS, RATE_WINDOW
 from .models import FuelStation
 
 logger = logging.getLogger(__name__)
 
 ORS_GEOCODE_URL = f"{settings.ORS_BASE_URL}/geocode/search"
 
-DAILY_LIMIT = 900        # safely under ORS 1,000/day quota
-WORKERS = 10             # parallel threads
-
-# Rate limiter: allow at most 80 API calls per 60-second sliding window.
-# Stays safely under ORS hard limit of 100 calls/minute.
-_RATE_LIMIT_CALLS = 80
-_RATE_WINDOW = 60.0
 _call_times: list[float] = []
 _rate_lock = threading.Lock()
 
@@ -142,13 +136,13 @@ def _ors_call(query: str) -> tuple[float, float] | None:
     """
     with _rate_lock:
         now = time.monotonic()
-        while _call_times and _call_times[0] < now - _RATE_WINDOW:
+        while _call_times and _call_times[0] < now - RATE_WINDOW:
             _call_times.pop(0)
-        if len(_call_times) >= _RATE_LIMIT_CALLS:
-            sleep_for = _RATE_WINDOW - (now - _call_times[0]) + 0.05
+        if len(_call_times) >= RATE_LIMIT_CALLS:
+            sleep_for = RATE_WINDOW - (now - _call_times[0]) + 0.05
             time.sleep(max(sleep_for, 0))
             now = time.monotonic()
-            while _call_times and _call_times[0] < now - _RATE_WINDOW:
+            while _call_times and _call_times[0] < now - RATE_WINDOW:
                 _call_times.pop(0)
         _call_times.append(time.monotonic())
 
